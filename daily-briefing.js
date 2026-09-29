@@ -465,10 +465,13 @@ async function generateBriefingMessage() {
  * Envía el briefing directamente a WhatsApp
  */
 async function sendMorningBriefing(targetJid = MY_PHONE_JID) {
+  if (!targetJid) throw new Error('briefing sin destinatario (MY_PHONE_JID vacío)');
   const text = await generateBriefingMessage();
   console.log(`📤 Enviando Daily Briefing Enriquecido a ${targetJid}...`);
   const result = await sendMessage(targetJid, text);
-  console.log('✅ Daily Briefing enviado con éxito.');
+  const deliveredId = result && (result.ID || result.id);
+  if (!deliveredId) throw new Error('briefing sin ID de entrega del daemon');
+  console.log(`✅ Daily Briefing enviado con éxito (id ${deliveredId}).`);
   return { success: true, result };
 }
 

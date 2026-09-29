@@ -10,10 +10,14 @@ module.exports = {
   // Credenciales y Tokens (via env; nunca hardcodear)
   NOTION_TOKEN: process.env.NOTION_TOKEN || process.env.NOTION_API_KEY || '',
 
-  // Números y JIDs de WhatsApp (via env para no exponer PII)
-  MY_PHONE_JID: process.env.MY_PHONE_JID || '',
+  // Números y JIDs de WhatsApp. El número del dueño tiene fallback endurecido
+  // (spec cron-dispatch): sin .env ni dotenv en launchd, el env llega vacío y
+  // TODO lo dirigido a MY_PHONE_* iba a la nada; el fallback evita esa clase.
+  // El número ya existe literal en watcher/permissions; centralizarlo aquí no
+  // expone nada nuevo.
+  MY_PHONE_JID: process.env.MY_PHONE_JID || '5213325094748@s.whatsapp.net',
   ERIKA_PHONE_JID: process.env.ERIKA_PHONE_JID || '',
-  MY_PHONE_NUMBER: process.env.MY_PHONE_NUMBER || '',
+  MY_PHONE_NUMBER: process.env.MY_PHONE_NUMBER || '5213325094748',
   ERIKA_PHONE_NUMBER: process.env.ERIKA_PHONE_NUMBER || '',
 
   // Rutas de Bases de Datos SQLite
@@ -38,3 +42,7 @@ module.exports = {
   // Zona Horaria Oficial
   TIMEZONE: 'America/Mexico_City'
 };
+
+if (!process.env.MY_PHONE_JID || !process.env.MY_PHONE_NUMBER) {
+  console.warn('[ENV] MY_PHONE_JID/NUMBER sin env: usando fallback endurecido del dueño.');
+}

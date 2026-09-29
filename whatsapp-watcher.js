@@ -589,22 +589,51 @@ function initWatcher() {
       // Si ya pasó la hora objetivo (>= 8am entre semana, >= 10am fin de semana) pero aún es mañana (< 13hrs)
       // y la Mac estuvo en reposo/dormida a las 8:00am, se despacha automáticamente al despertar.
       if (!briefingSentToday && currentHour >= targetHour && currentHour < 13) {
-        lastBriefingDate = todayStr;
         console.log(`🌅 [DAILY BRIEFING] Disparando briefing matutino (Hora: ${p.hour}:${p.minute}, Objetivo: ${targetHour}:00)...`);
-        await sendMorningBriefing();
+        try {
+          await sendMorningBriefing();
+          lastBriefingDate = todayStr; // solo tras entrega confirmada (reintenta al siguiente tick si falla)
+        } catch (err) {
+          console.error(`🌅 [DAILY BRIEFING] Falló el envío, reintenta en el siguiente tick: ${err.message}`);
+        }
       }
 
       // Reporte financiero semanal dominical (con ventana de 20:00 a 22:59)
       if (now.getDay() === 0 && currentHour >= 20 && currentHour < 23 && lastFinanceReportDate !== todayStr) {
-        lastFinanceReportDate = todayStr;
-        const report = await financeReport.generateWeeklyReport();
-        if (report?.message) await sendMessage(MY_PHONE_JID, report.message);
+        try {
+          const report = await financeReport.generateWeeklyReport();
+          if (!report?.message) {
+            console.error('💸 [FINANCE] Reporte vacío, reintenta en el siguiente tick.');
+          } else {
+            const sent = await sendMessage(MY_PHONE_JID, report.message);
+            if (sent && (sent.ID || sent.id)) {
+              lastFinanceReportDate = todayStr; // solo tras entrega confirmada
+            } else {
+              console.error('💸 [FINANCE] Envío sin ID de entrega, reintenta en el siguiente tick.');
+            }
+          }
+        } catch (err) {
+          console.error(`💸 [FINANCE] Falló el envío, reintenta en el siguiente tick: ${err.message}`);
+        }
       }
 
-      // Auditoría nocturna de Notion (03:30)
+      // Auditoría nocturna de Notion (03:30) + envío del reporte al chat propio
       if (currentHour >= 3 && currentHour < 5 && lastAuditDate !== todayStr) {
-        lastAuditDate = todayStr;
-        await secondBrainAuditor.runFullAudit(true, true);
+        try {
+          const audit = await secondBrainAuditor.runFullAudit(true, true);
+          if (audit && audit.whatsappMessage) {
+            const sent = await sendMessage(MY_PHONE_JID, audit.whatsappMessage);
+            if (sent && (sent.ID || sent.id)) {
+              lastAuditDate = todayStr; // solo tras entrega confirmada
+            } else {
+              console.error('🔍 [AUDITOR] Envío sin ID de entrega, reintenta en el siguiente tick.');
+            }
+          } else {
+            console.error('🔍 [AUDITOR] Reporte vacío, reintenta en el siguiente tick.');
+          }
+        } catch (err) {
+          console.error(`🔍 [AUDITOR] Falló auditoría/envío, reintenta en el siguiente tick: ${err.message}`);
+        }
       }
 
       // Proactive Pulse & Heartbeat Predictivo (Deadlines, Clases CUCEA, Salud Batería)

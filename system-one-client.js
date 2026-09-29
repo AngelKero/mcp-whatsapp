@@ -155,7 +155,7 @@ async function classifyUserIntent(text) {
 
   // Pre-filtro por palabras candidatas: Si el texto no contiene léxico de alguna intención especial, retornar 'otra' en 0ms
   const hasFinance = /(?:corte|gastos?|finanzas?|balance|cuanto\s+he\s+gastado|reporte\s+financiero|resumen\s+de\s+gastos)/i.test(clean);
-  const hasBriefing = /(?:briefing|daily|agenda|resumen\s+(?:del?\s+d[ií]a|de\s+hoy)|qu[eé]\s+tengo\s+hoy|buenos\s+d[ií]as)/i.test(clean);
+  const hasBriefing = /(?:briefing|daily|agenda|resumen\s+(?:del?\s+d[ií]a|de\s+hoy)|qu[eé]\s+tengo\s+hoy|dame\s+mi\s+d[ií]a|buenos\s+d[ií]as\s*,?\s*(?:dame|pasame|pásame|manda|mándame|cuál|cual|qué|que))/i.test(clean);
   const hasAudit = /(?:auditor[ií]a|auditar|salud\s+(?:del?\s+)?second\s+brain|revisar\s+notion|regenerar\s+grafo)/i.test(clean);
   const hasClass = /(?:clase|graba(?:r|ndo|ci[oó]n)?|apuntes?\s+de\s+clase|whisper)/i.test(clean);
 

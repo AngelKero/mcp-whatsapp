@@ -376,6 +376,19 @@ class PassiveExtractor {
     // Clasificación de intención semántica 100% con Laya-MLX (Sistema 1 en GPU Metal)
     const userIntent = await classifyUserIntent(cleanText);
 
+    // Gate de dueño (spec passive-extractor): agenda, finanzas y auditoría
+    // solo disparan en el chat propio, nunca en chats de terceros.
+    const isOwnerChat = !!(context && context.isMyOwnChat);
+    if ((userIntent === 'daily_briefing' || userIntent === 'corte_gastos' || userIntent === 'auditoria_notion') && !isOwnerChat) {
+      return null;
+    }
+
+    // Pre-filtro saludo-vs-briefing: un "buenos días" sin petición explícita
+    // de agenda no genera briefing (caso real observado con Laya).
+    if (userIntent === 'daily_briefing' && !/(agenda|briefing|brief|dame mi|resumen|c[óo]mo va mi)/i.test(cleanText)) {
+      return null;
+    }
+
     if (userIntent === 'corte_gastos') {
       try {
         const report = await financeReport.generateWeeklyReport();
