@@ -350,11 +350,38 @@ async function sendTyping(chatJid, active = true, kind = '') {
   }
 }
 
+/**
+ * Despacho contextual (spec contextual-replies):
+ * - Con messageId → `send_reply` citando el trigger (senderJid solo en grupos,
+ *   omitido en 1:1 — el daemon rechaza sender en 1:1 y el participant debe ser
+ *   JID teléfono, resuelto vía whatsmeow_lid_map del lado daemon).
+ * - Sin messageId → `send_message` directo, sin intentar cita.
+ * - Si `send_reply` falla (referencia inválida/expirada) → UN reintento en
+ *   plano + log `reply-fallback`. Exactamente un mensaje entregado.
+ * `deps` inyectable para tests ({ sendReplyFn, sendMessageFn }).
+ */
+async function sendReplyOrFallback(chatJid, body, opts = {}, deps = {}) {
+  const { messageId = null, senderJid = '', isGroup = false } = opts;
+  const replyFn = deps.sendReplyFn || sendReply;
+  const plainFn = deps.sendMessageFn || sendMessage;
+  if (!messageId) {
+    return plainFn(chatJid, body);
+  }
+  const targetSender = isGroup ? (senderJid || '') : '';
+  try {
+    return await replyFn(chatJid, body, messageId, targetSender);
+  } catch (err) {
+    console.warn(`[MCP-CLIENT] reply-fallback a send_message en ${chatJid}:`, err.message);
+    return plainFn(chatJid, body);
+  }
+}
+
 module.exports = {
   callTool,
   getStatus,
   sendMessage,
   sendReply,
+  sendReplyOrFallback,
   sendReaction,
   sendFile,
   sendSticker,

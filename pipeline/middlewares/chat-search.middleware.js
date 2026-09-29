@@ -8,7 +8,8 @@ const { classifySearchCommand } = require('../../system-one-client.js');
  * Responde inmediatamente en <50ms sin pasar por el LLM.
  */
 module.exports = function createChatSearchMiddleware(antiEcho, customSendReply = null) {
-  const replyFn = customSendReply || ((...args) => mcpClient.sendReply(...args));
+  const replyFn = customSendReply || ((chatJid, body, msgId, senderJid = '') =>
+    mcpClient.sendReplyOrFallback(chatJid, body, { messageId: msgId, senderJid, isGroup: !!senderJid }));
 
   return async function chatSearchMiddleware(ctx, next) {
     const { text, chatJid, sender, isGroup, msg, isFromAngel } = ctx;

@@ -91,7 +91,8 @@ function getSystemMetrics() {
 }
 
 module.exports = function createMacControlMiddleware(antiEcho, customSendReply = null, customSendMessage = null, customSendFile = null) {
-  const replyFn = customSendReply || ((...args) => mcpClient.sendReply(...args));
+  const replyFn = customSendReply || ((chatJid, body, msgId, senderJid = '') =>
+    mcpClient.sendReplyOrFallback(chatJid, body, { messageId: msgId, senderJid, isGroup: !!senderJid }));
   const sendFn = customSendMessage || ((...args) => mcpClient.sendMessage(...args));
   const sendFileFn = customSendFile || ((...args) => mcpClient.sendFile(...args));
 

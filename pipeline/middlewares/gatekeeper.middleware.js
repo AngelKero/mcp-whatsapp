@@ -1,4 +1,4 @@
-const { sendReply, sendMessage } = require('../../mcp-client.js');
+const { sendReplyOrFallback, sendMessage } = require('../../mcp-client.js');
 const sessionManager = require('../../session-manager.js');
 const {
   classifyBotMention,
@@ -67,18 +67,17 @@ module.exports = function createGatekeeperMiddleware(antiEcho, chatQueue) {
         ? '¡De nada, Angel! Aquí andamos para lo que ocupes :3'
         : `¡Hasta luego, ${senderName}! Que tengas un excelente día ✨`;
       antiEcho.remember(byeReply);
-      if (isMyOwnChat || !isGroup) {
-        const sentRes = await sendMessage(chatJid, byeReply);
-        const sentId = sentRes?.ID || sentRes?.id;
-        if (sentId && typeof antiEcho.recordSentMessage === 'function') {
-          antiEcho.recordSentMessage(sentId, chatJid, byeReply);
-        }
+      let sentRes;
+      if (isMyOwnChat) {
+        sentRes = await sendMessage(chatJid, byeReply);
       } else {
-        const sentRes = await sendReply(chatJid, byeReply, ctx.msg.id, isGroup ? sender : '');
-        const sentId = sentRes?.ID || sentRes?.id;
-        if (sentId && typeof antiEcho.recordSentMessage === 'function') {
-          antiEcho.recordSentMessage(sentId, chatJid, byeReply);
-        }
+        sentRes = await sendReplyOrFallback(chatJid, byeReply, {
+          messageId: ctx.msg.id, senderJid: isGroup ? sender : '', isGroup
+        });
+      }
+      const sentId = sentRes?.ID || sentRes?.id;
+      if (sentId && typeof antiEcho.recordSentMessage === 'function') {
+        antiEcho.recordSentMessage(sentId, chatJid, byeReply);
       }
       return;
     }

@@ -112,6 +112,17 @@ func (c *Client) SendReaction(ctx context.Context, chatJID, messageID, senderJID
 }
 
 // SendReply sends a text reply that quotes targetMessageID from chatJID.
+//
+// Quote construction follows the canonical contract (upstream tulir/whatsmeow
+// #88, helpers like BuildReply #1147): ContextInfo carries StanzaId plus a
+// Participant that is ALWAYS set — the sender param in groups, otherwise the
+// 1:1 chat JID itself (a bare StanzaId without Participant does not render on
+// recipients). Participant goes through LID→phone resolution first: a LID
+// remoteJid breaks tap-to-scroll on the recipient's client. A stripped copy of
+// the original text is embedded as QuotedMessage (principal content only, no
+// nested context, so quote chains cannot recurse); other clients resolve via
+// server anyway, but ours renders instantly. Lookup misses leave QuotedMessage
+// nil — still strictly better than the old bare-StanzaId shape.
 func (c *Client) SendReply(ctx context.Context, chatJID, targetMessageID, targetSenderJID, body string) error {
 	if !c.wa.IsConnected() {
 		return errors.New("not connected to WhatsApp")
@@ -124,10 +135,18 @@ func (c *Client) SendReply(ctx context.Context, chatJID, targetMessageID, target
 	participant := ""
 	if targetSenderJID != "" {
 		// ContextInfo.Participant expects a JID string for group quotes.
-		if sender, perr := types.ParseJID(targetSenderJID); perr == nil {
+		if sender, perr := types.ParseJID(c.store.ResolveLIDToJID(targetSenderJID)); perr == nil {
 			participant = sender.ToNonAD().String()
 		} else {
 			participant = targetSenderJID
+		}
+	} else {
+		// 1:1 (or self) quotes: the chat JID IS the other party. Resolve a
+		// possible LID chat to its phone JID first for the same reason.
+		if resolved, perr := types.ParseJID(c.store.ResolveLIDToJID(chat.String())); perr == nil {
+			participant = resolved.ToNonAD().String()
+		} else {
+			participant = chat.ToNonAD().String()
 		}
 	}
 
@@ -138,6 +157,15 @@ func (c *Client) SendReply(ctx context.Context, chatJID, targetMessageID, target
 		ctxInfo.Participant = proto.String(participant)
 	}
 
+	// Best-effort stripped quote of the original text from the local cache.
+	if mc, merr := c.store.GetMessageContext(ctx, targetMessageID, 0, 0); merr == nil {
+		if text := strings.TrimSpace(mc.Message.Content); text != "" {
+			ctxInfo.QuotedMessage = &waProto.Message{
+				Conversation: proto.String(text),
+			}
+		}
+	}
+
 	msg := &waProto.Message{
 		ExtendedTextMessage: &waProto.ExtendedTextMessage{
 			Text:        proto.String(body),
@@ -146,9 +174,13 @@ func (c *Client) SendReply(ctx context.Context, chatJID, targetMessageID, target
 		MessageContextInfo: c.ephemeralContextInfo(ctx, chat),
 	}
 
-	if _, err := c.wa.SendMessage(ctx, chat, msg); err != nil {
+	resp, err := c.wa.SendMessage(ctx, chat, msg)
+	if err != nil {
 		return fmt.Errorf("send reply: %w", err)
 	}
+	// Cache the sent reply like any outgoing message; without this, replies
+	// are invisible to list_messages/history (the tool promises caching).
+	c.persistSent(ctx, chat, resp.ID, body, "", msg)
 	return nil
 }
 

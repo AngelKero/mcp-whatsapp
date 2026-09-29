@@ -238,10 +238,12 @@ async function processAiTurn(chatJid, lastMsg, combinedText, senderName, isGroup
       antiEcho.remember(fastResult.message);
       botSentTexts.add(fastResult.message.trim());
       let sentRes;
-      if (isMyOwnChat || !isGroup) {
+      if (isMyOwnChat) {
         sentRes = await sendMessage(chatJid, fastResult.message);
       } else {
-        sentRes = await sendReply(chatJid, fastResult.message, lastMsg.id, isGroup ? lastMsg.sender : '');
+        sentRes = await sendReplyOrFallback(chatJid, fastResult.message, {
+          messageId: lastMsg.id, senderJid: isGroup ? lastMsg.sender : '', isGroup
+        });
       }
       const sentId = sentRes?.ID || sentRes?.id;
       if (sentId) {
@@ -279,10 +281,12 @@ async function processAiTurn(chatJid, lastMsg, combinedText, senderName, isGroup
     antiEcho.remember(quickReply);
     botSentTexts.add(quickReply.trim());
     let sentRes;
-    if (isMyOwnChat || !isGroup) {
+    if (isMyOwnChat) {
       sentRes = await sendMessage(chatJid, quickReply);
     } else {
-      sentRes = await sendReply(chatJid, quickReply, lastMsg.id, isGroup ? lastMsg.sender : '');
+      sentRes = await sendReplyOrFallback(chatJid, quickReply, {
+        messageId: lastMsg.id, senderJid: isGroup ? lastMsg.sender : '', isGroup
+      });
     }
     const sentId = sentRes?.ID || sentRes?.id;
     if (sentId) {
@@ -324,11 +328,13 @@ async function processAiTurn(chatJid, lastMsg, combinedText, senderName, isGroup
 
     try {
       let sentRes;
-      if (isMyOwnChat || !isGroup) {
+      if (isMyOwnChat) {
         sentRes = await sendMessage(chatJid, aiResult.reply);
         console.log(`📤 [IA RESPUESTA] Enviada a ${chatJid}: "${aiResult.reply.replace(/\n/g, ' ').slice(0, 60)}..."`);
       } else {
-        sentRes = await sendReply(chatJid, aiResult.reply, lastMsg.id, isGroup ? lastMsg.sender : '');
+        sentRes = await sendReplyOrFallback(chatJid, aiResult.reply, {
+          messageId: lastMsg.id, senderJid: isGroup ? lastMsg.sender : '', isGroup
+        });
         console.log(`📤 [IA RESPUESTA CITADA] Enviada a ${chatJid} (citando ${lastMsg.id}): "${aiResult.reply.replace(/\n/g, ' ').slice(0, 60)}..."`);
       }
       const sentId = sentRes?.ID || sentRes?.id;
@@ -337,17 +343,8 @@ async function processAiTurn(chatJid, lastMsg, combinedText, senderName, isGroup
         antiEcho.recordSentMessage(sentId, chatJid, aiResult.reply);
       }
     } catch (sendErr) {
-      console.error(`[SEND ERROR] Error enviando respuesta a ${chatJid}:`, sendErr.message);
-      try {
-        const fallbackRes = await sendMessage(chatJid, aiResult.reply);
-        const fbId = fallbackRes?.ID || fallbackRes?.id;
-        if (fbId) {
-          processedMessageIds.add(fbId);
-          antiEcho.recordSentMessage(fbId, chatJid, aiResult.reply);
-        }
-      } catch (fallbackErr) {
-        console.error(`[SEND FALLBACK ERROR] Fallback a ${chatJid} falló:`, fallbackErr.message);
-      }
+      // El helper ya reintentó una vez en plano; no reenviar (presupuesto: un mensaje).
+      console.error(`[SEND ERROR] Respuesta a ${chatJid} falló tras fallback:`, sendErr.message);
     }
 
     // Selección y despacho pragmático de Stickers
