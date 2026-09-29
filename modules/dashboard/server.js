@@ -133,6 +133,100 @@ function readBody(req, limit = 256 * 1024) {
   });
 }
 
+/**
+ * Bootstrap de memoria: lee hasta `limit` mensajes del chat desde messages.db,
+ * corre extracción long-range con timestamps originales y escribe hechos con
+ * dedupe por source_msg_id (idempotente: re-ejecutar añade 0 duplicados).
+ * Corre en el hilo del request HTTP, nunca en el hot path de mensajes.
+ */
+async function runMemoryBootstrap(chatJid, limit = 50) {
+  const memMod = require('../../pipeline/memory-store.js');
+  const memExtract = require('../../pipeline/memory-extract.js');
+  const store = memMod.getMemoryStore();
+  const lim = Math.min(Math.max(parseInt(limit || 50, 10) || 50, 1), 50);
+  const messagesDbPath = process.env.MESSAGES_DB_PATH || DB_PATHS.MESSAGES;
+  const mdb = new DatabaseSync(messagesDbPath, { readOnly: true });
+  let rows = [];
+  try {
+    rows = mdb.prepare(
+      `SELECT id, chat_jid, sender, content, timestamp FROM messages
+       WHERE chat_jid = ? AND content IS NOT NULL AND trim(content) != ''
+       ORDER BY timestamp DESC LIMIT ?`
+    ).all(chatJid, lim);
+  } finally {
+    try { mdb.close(); } catch {}
+  }
+  const isGroup = String(chatJid).endsWith('@g.us');
+  let added = 0;
+  let updated = 0;
+  const touched = new Set();
+  for (const r of rows) {
+    const memKey = memMod.memoryKeyFor(r.chat_jid, r.sender);
+    if (!memKey) continue;
+    const facts = memExtract.extractFacts(r.content);
+    for (const f of facts) {
+      // eslint-disable-next-line no-await-in-loop
+      const res = await store.saveFact({
+        memKey, key: f.key, value: f.value, category: f.category,
+        scope: isGroup ? 'group' : 'self', sourceMsgId: r.id
+      });
+      if (res && res.action === 'saved') added += 1;
+      else if (res && res.action === 'updated') updated += 1;
+      touched.add(memKey);
+    }
+  }
+  // Opt-in explícito: el botón equivale a activar la memoria del chat.
+  for (const k of touched) {
+    // eslint-disable-next-line no-await-in-loop
+    await store.setEnabled(k, chatJid, true);
+    store.logEvent(k, 'bootstrap', null, `bootstrap: +${added} nuevos, ~${updated} actualizados`, `últimos ${rows.length} mensajes`);
+  }
+  if (isGroup) {
+    try {
+      const chatKey = store.chatLevelKey(chatJid);
+      if (chatKey) await store.setChatEnabled(chatJid, chatJid, true);
+    } catch {}
+  }
+  return { scanned: rows.length, added, updated, chats: touched.size };
+}
+
+/** Mezcla memory_enabled + memory_facts_count en la lista de chats (fail-open). */
+function mergeMemoryIntoChats(list) {
+  try {
+    const memMod = require('../../pipeline/memory-store.js');
+    const store = memMod.getMemoryStore();
+    const { settingsMap, countMap } = store.getMemoryOverview();
+    return (list || []).map((c) => {
+      const jid = String(c.jid || c.chat_jid || '');
+      const isGroup = jid.endsWith('@g.us');
+      let enabled = false;
+      let count = 0;
+      if (isGroup) {
+        const digits = memMod.digitsOf(jid);
+        const prefix = digits ? `grp:${digits}:` : null;
+        const chatKey = digits ? `grp:${digits}` : null;
+        if (chatKey && settingsMap.get(chatKey)) enabled = true;
+        for (const [k, v] of countMap) {
+          if (prefix && k.startsWith(prefix)) {
+            count += v;
+            if (settingsMap.get(k)) enabled = true;
+          }
+        }
+        if (!enabled && chatKey) enabled = !!settingsMap.get(chatKey);
+      } else {
+        const mk = memMod.memoryKeyFor(jid, jid);
+        if (mk) {
+          enabled = !!settingsMap.get(mk);
+          count = countMap.get(mk) || 0;
+        }
+      }
+      return { ...c, memory_enabled: enabled, memory_facts_count: count };
+    });
+  } catch {
+    return list;
+  }
+}
+
 const SPA_HTML = `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -231,6 +325,13 @@ details.more summary{list-style:none;cursor:pointer;font-size:13px;font-weight:8
 details.more summary::-webkit-details-marker{display:none}
 details.more summary:hover{color:var(--ink)}
 .moreRow{display:flex;flex-wrap:wrap;gap:10px;padding:4px 0 2px}
+.memrow{display:flex;flex-wrap:wrap;gap:10px;padding:8px 0 2px;width:100%}
+.memfacts{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+.memfact{display:flex;align-items:center;gap:8px;background:var(--card2);border:2px solid var(--line);border-radius:12px;padding:8px 8px 8px 12px;font-size:13px;font-weight:600}
+.memfact span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.memfact button{flex:none;border:2px solid var(--line);background:var(--card);border-radius:10px;min-width:44px;min-height:44px;font-size:15px;font-weight:800;cursor:pointer;color:var(--ink);font-family:inherit}
+.badge.mem{background:var(--grape);color:#fff}
+.memempty{font-size:13px;color:var(--mut);font-weight:700}
 .foot{text-align:center;color:var(--mut);font-size:13px;font-weight:600;padding:24px 16px;line-height:1.7}
 :focus-visible{outline:3px solid var(--grape);outline-offset:2px;border-radius:8px}
 @media(max-width:640px){.stats{grid-template-columns:repeat(2,1fr)}h1{font-size:19px}}
@@ -297,7 +398,8 @@ const bb=document.getElementById('bulkBar');bb.classList.toggle('show',selected.
 el.innerHTML=rows.map((c,i)=>'<div class="card'+(c.autonomy_mode==='SILENT'?' is-silent':'')+'"><div class=row1><label class=selBox><input type=checkbox data-j="'+esc(c.jid)+'" class=sel '+(selected.has(c.jid)?'checked':'')+' aria-label="Seleccionar '+esc(c.name||c.jid)+'"></label><div class=nm>'+esc(c.name||c.jid)+'</div>'
 +(c.is_group?'<span class="badge g">grupo</span>':'<span class="badge p">privado</span>')
 +(c.is_marketplace?'<span class="badge mk">marketplace</span>':'')
-+'<span class="badge '+modeClass(c.autonomy_mode)+'">'+(c.autonomy_mode==='SILENT'?'silencio':c.autonomy_mode==='AUTONOMOUS'?'auto':'menciones')+'</span></div>'
+ +'<span class="badge '+modeClass(c.autonomy_mode)+'">'+(c.autonomy_mode==='SILENT'?'silencio':c.autonomy_mode==='AUTONOMOUS'?'auto':'menciones')+'</span>'
+ +(c.memory_enabled?'<span class="badge mem">🧠 '+(c.memory_facts_count||0)+'</span>':'')+'</div>'
 +'<div class=jid><span>'+esc(c.jid)+(c.last_message_time?' · '+fmtT(c.last_message_time):'')+(c.is_custom?' · personalizado':'')+'</span><button class=copyJid type=button data-j="'+esc(c.jid)+'" aria-label="Copiar JID">Copiar</button></div>'
 +'<div class=ctl><div class=seg role=radiogroup aria-label="Modo de autonomía">'
 +segBtn(c,'SILENT','m-silent','Silencio')+segBtn(c,'MENTIONS_ONLY','m-ment','Menciones')+segBtn(c,'AUTONOMOUS','m-auto','Auto')
@@ -305,14 +407,21 @@ el.innerHTML=rows.map((c,i)=>'<div class="card'+(c.autonomy_mode==='SILENT'?' is
 +'<details class=more><summary>··· Más (Notion, Media, Reposo)</summary><div class=moreRow>'
 +'<label class=mini title="Guarda en Second Brain"><input type=checkbox data-j="'+esc(c.jid)+'" class=notion '+(c.allow_notion?'checked':'')+'> Notion · guarda</label>'
 +'<label class=mini title="Permite fotos y audio"><input type=checkbox data-j="'+esc(c.jid)+'" class=media '+(c.allow_media?'checked':'')+'> Media · fotos</label>'
-+'<button class=reset data-j="'+esc(c.jid)+'"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 2 6"/><path d="M4 4v6h6"/></svg>Reposo</button></div></details></div></div>').join('')
+ +'<button class=reset data-j="'+esc(c.jid)+'"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 2 6"/><path d="M4 4v6h6"/></svg>Reposo</button></div></details>'
+ +'<div class=memrow><label class=mini title="Recuerda contexto de esta persona entre sesiones"><input type=checkbox data-j="'+esc(c.jid)+'" class=memoria '+(c.memory_enabled?'checked':'')+'> Memoria · recuerda</label>'
+ +'<button class=reset type=button data-j="'+esc(c.jid)+'" data-memboot>✨ Generar contexto</button>'
+ +'<button class=reset type=button data-j="'+esc(c.jid)+'" data-memview>📝 Ver memoria'+(c.memory_facts_count?' ('+c.memory_facts_count+')':'')+'</button></div>'
+ +'<div class=memfacts id="mf-'+i+'" hidden></div></div></div>').join('')
 ||'<div class="card empty"><b>Nada por aquí :3</b><p>No hay chats con este filtro. Prueba otra búsqueda o limpia los filtros.</p><button type=button onclick="clearAllFilters()">Limpiar búsqueda y filtros</button></div>';
 el.querySelectorAll('button.copyJid').forEach(b=>b.onclick=async()=>{try{await navigator.clipboard.writeText(b.dataset.j);b.textContent='¡Copiado!';say('JID copiado.');setTimeout(()=>b.textContent='Copiar',1200);}catch{toast('No se pudo copiar el JID.');}});
 el.querySelectorAll('input.sel').forEach(c=>c.onchange=()=>{if(c.checked)selected.add(c.dataset.j);else selected.delete(c.dataset.j);render();});
 el.querySelectorAll('.seg button').forEach(s=>s.onclick=()=>updateChat(s.dataset.j,{autonomy_mode:s.dataset.v},s));
 el.querySelectorAll('input.notion').forEach(c=>c.onchange=()=>updateChat(c.dataset.j,{allow_notion:c.checked?1:0},c));
 el.querySelectorAll('input.media').forEach(c=>c.onchange=()=>updateChat(c.dataset.j,{allow_media:c.checked?1:0},c));
-el.querySelectorAll('button.reset').forEach(b=>b.onclick=async()=>{const orig=b.innerHTML;const jid=b.dataset.j;b.disabled=true;try{const r=await fetch('/api/chats/'+encodeURIComponent(jid)+'/reset',{method:'POST'});if(!r.ok)throw new Error('HTTP '+r.statusCode);const d=await r.json().catch(()=>({}));if(d.ok===false)throw new Error('reset rechazado');b.innerHTML='✓ Reposo';say('Chat en reposo. Sesión reiniciada.');setTimeout(()=>{b.innerHTML=orig;b.disabled=false;},1200);}catch(e){b.innerHTML=orig;b.disabled=false;toast('No se pudo poner en reposo. Intenta de nuevo.');}});
+el.querySelectorAll('button.reset:not([data-memboot]):not([data-memview])').forEach(b=>b.onclick=async()=>{const orig=b.innerHTML;const jid=b.dataset.j;b.disabled=true;try{const r=await fetch('/api/chats/'+encodeURIComponent(jid)+'/reset',{method:'POST'});if(!r.ok)throw new Error('HTTP '+r.statusCode);const d=await r.json().catch(()=>({}));if(d.ok===false)throw new Error('reset rechazado');b.innerHTML='✓ Reposo';say('Chat en reposo. Sesión reiniciada.');setTimeout(()=>{b.innerHTML=orig;b.disabled=false;},1200);}catch(e){b.innerHTML=orig;b.disabled=false;toast('No se pudo poner en reposo. Intenta de nuevo.');}});
+el.querySelectorAll('input.memoria').forEach(c=>c.onchange=()=>toggleMemory(c.dataset.j,c.checked,c));
+el.querySelectorAll('button[data-memboot]').forEach(b=>b.onclick=()=>bootstrapMemory(b.dataset.j,b));
+el.querySelectorAll('button[data-memview]').forEach(b=>b.onclick=()=>viewFacts(b.dataset.j,b));
 }
 function esc(s){return String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
 const pendingChats=new Set();
@@ -331,6 +440,14 @@ document.getElementById('bulkMen').onclick=()=>bulkSet('MENTIONS_ONLY');
 document.getElementById('bulkAuto').onclick=()=>bulkSet('AUTONOMOUS');
 document.getElementById('bulkClear').onclick=()=>{selected.clear();render();};
 document.getElementById('retryBtn').onclick=()=>{statusFails=0;loadStatus();loadChats();};
+async function memFetch(jid,path,opts){const r=await fetch('/api/chats/'+encodeURIComponent(jid)+'/memory'+path,opts);const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('HTTP '+r.status));return d;}
+async function toggleMemory(jid,on,el){if(el)el.disabled=true;try{const d=await memFetch(jid,'',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:on})});const i=chats.findIndex(c=>c.jid===jid);if(i>=0){chats[i].memory_enabled=!!d.enabled;}paintTabs();render();say(d.enabled?'Memoria activada para este chat :3':'Memoria apagada. Ya no recordaré este chat.');}catch(e){render();toast(e.message||'No se pudo cambiar la memoria.');} }
+async function bootstrapMemory(jid,btn){const orig=btn.innerHTML;btn.disabled=true;btn.innerHTML='⏳ Leyendo…';try{const d=await memFetch(jid,'/bootstrap',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({limit:50})});const i=chats.findIndex(c=>c.jid===jid);if(i>=0){chats[i].memory_enabled=true;chats[i].memory_facts_count=(chats[i].memory_facts_count||0)+d.added;}paintTabs();render();toast('Contexto listo: '+d.added+' nuevos, '+d.updated+' actualizados ('+d.scanned+' leídos) :3');}catch(e){btn.disabled=false;btn.innerHTML=orig;toast(e.message||'No se pudo generar el contexto.');}}
+async function viewFacts(jid,btn){const card=btn.closest('.card');if(!card)return;const box=card.querySelector('.memfacts');if(!box)return;if(!box.hidden){box.hidden=true;box.innerHTML='';btn.innerHTML='📝 Ver memoria';return;}btn.disabled=true;try{const d=await memFetch(jid,'',{method:'GET'});const facts=d.facts||[];if(!facts.length){box.innerHTML='<div class=memempty>Aún no recuerdo nada de este chat. Usa ✨ Generar contexto o !recordar.</div>';}else{box.innerHTML=facts.map(f=>'<div class=memfact data-id="'+f.id+'"><span>'+esc(f.fact_key)+': '+esc(f.value)+'</span><button type=button data-act="edit" aria-label="Editar recuerdo">✏️</button><button type=button data-act="del" aria-label="Borrar recuerdo">🗑️</button></div>').join('')+'<div class=memrow><button class=reset type=button data-act="clear">🗑️ Borrar todo</button></div>';box.querySelectorAll('.memfact button').forEach(b=>b.onclick=()=>{const id=b.closest('.memfact').dataset.id;if(b.dataset.act==='del')delFact(jid,id,box,btn);else editFact(jid,id,box,btn);});const clr=box.querySelector('[data-act="clear"]');if(clr)clr.onclick=()=>clearFacts(jid,box,btn);}box.hidden=false;btn.innerHTML='📝 Ocultar';}catch(e){toast(e.message||'No se pudo cargar la memoria.');}finally{btn.disabled=false;}}
+async function refreshMemCount(jid){try{const d=await memFetch(jid,'',{method:'GET'});const i=chats.findIndex(c=>c.jid===jid);if(i>=0){chats[i].memory_enabled=!!d.enabled;chats[i].memory_facts_count=(d.facts||[]).length;}paintTabs();render();}catch{}}
+async function delFact(jid,id,box,btn){try{await memFetch(jid,'/facts?id='+encodeURIComponent(id),{method:'DELETE'});toast('Recuerdo borrado.');await refreshMemCount(jid);}catch(e){toast(e.message||'No se pudo borrar.');}}
+async function clearFacts(jid,box,btn){if(!confirm('¿Borrar TODA la memoria de este chat? No se puede deshacer.'))return;try{const d=await memFetch(jid,'/facts?all=1',{method:'DELETE'});toast('Borrados '+(d.deleted||0)+' recuerdos.');await refreshMemCount(jid);}catch(e){toast(e.message||'No se pudo borrar.');}}
+async function editFact(jid,id,box,btn){try{const d=await memFetch(jid,'',{method:'GET'});const f=(d.facts||[]).find(x=>String(x.id)===String(id));if(!f){toast('Ya no existe ese recuerdo.');return;}const nv=prompt('Editar recuerdo ('+f.fact_key+'):',f.value);if(nv===null||!nv.trim()||nv.trim()===f.value)return;const r=await fetch('/api/chats/'+encodeURIComponent(jid)+'/memory/facts?id='+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:nv.trim()})});const u=await r.json().catch(()=>({}));if(!r.ok)throw new Error(u.error||('HTTP '+r.status));toast('Recuerdo actualizado :3');await refreshMemCount(jid);}catch(e){toast(e.message||'No se pudo editar.');}}
 let killArmed=false,killTimer=null,undoTimer=null,undoPrev=null;
 function setKillUI(on){const k=document.getElementById('kill');k.classList.toggle('off',!on);k.setAttribute('aria-pressed',String(on));document.getElementById('ktx').textContent=on?'Prendido':'Apagado';document.getElementById('sub').textContent=on?'bot activo':'bot en pausa global';}
 function showUndo(prev){undoPrev=prev;const u=document.getElementById('undo');document.getElementById('undoTx').textContent=prev?'Bot apagado. Nada se envía.':'Bot prendido de nuevo :3';u.classList.add('show');const btn=document.getElementById('undoBtn');let s=10;btn.textContent='Deshacer ('+s+'s)';clearInterval(undoTimer);undoTimer=setInterval(()=>{s--;if(s<=0){clearInterval(undoTimer);u.classList.remove('show');}else btn.textContent='Deshacer ('+s+'s)';},1000);}
@@ -391,11 +508,138 @@ async function handler(req, res) {
   if (url.pathname === '/api/chats' && req.method === 'GET') {
     try {
       const list = permissions.getAllChatsWithPermissions();
-      sendJson(res, 200, list);
+      sendJson(res, 200, mergeMemoryIntoChats(list));
     } catch (err) {
       sendJson(res, 500, { error: err.message });
     }
     return;
+  }
+
+  // ---- Memoria por chat (chat-memory) ----
+  // GET /api/chats/:jid/memory -> { jid, enabled, ttl_days, facts_count, facts }
+  // PUT /api/chats/:jid/memory {enabled?: bool, ttl_days?: int|null}
+  // POST /api/chats/:jid/memory/bootstrap {limit?: 1..50}
+  // DELETE /api/chats/:jid/memory/facts?id=X | ?all=1
+  // Fail-open: errores de store devuelven degraded:true sin tumbar el panel.
+  const memMatch = url.pathname.match(/^\/api\/chats\/([^/]+)\/memory(\/.*)?$/);
+  if (memMatch) {
+    const jid = decodeURIComponent(memMatch[1] || '');
+    const sub = memMatch[2] || '';
+    if (!jid) {
+      sendJson(res, 400, { error: 'JID requerido' });
+      return;
+    }
+    let memStore = null;
+    try {
+      memStore = require('../../pipeline/memory-store.js').getMemoryStore();
+    } catch (err) {
+      sendJson(res, 200, { jid, enabled: false, degraded: true, error: err.message });
+      return;
+    }
+    const memMod = require('../../pipeline/memory-store.js');
+    const isGroup = String(jid).endsWith('@g.us');
+
+    if (req.method === 'GET' && (sub === '' || sub === '/')) {
+      try {
+        const facts = isGroup
+          ? memStore.getGroupFacts(jid, { limit: 50 })
+          : memStore.getFacts(memMod.memoryKeyFor(jid, jid) || '', { limit: 50 });
+        const enabled = memStore.isEnabledFor(jid, jid);
+        sendJson(res, 200, { jid, enabled, facts_count: facts.length, facts });
+      } catch (err) {
+        sendJson(res, 200, { jid, enabled: false, degraded: true, error: err.message });
+      }
+      return;
+    }
+
+    if (req.method === 'PUT' && (sub === '' || sub === '/')) {
+      try {
+        const body = await readBody(req);
+        if (body.enabled !== undefined) {
+          const v = body.enabled;
+          const okBool = typeof v === 'boolean' ? v
+            : typeof v === 'number' ? (v === 1 ? true : v === 0 ? false : null)
+            : typeof v === 'string' ? (/^(1|true|on|sí|si)$/i.test(v.trim()) ? true : /^(0|false|off|no)$/i.test(v.trim()) ? false : null)
+            : null;
+          if (okBool === null) {
+            sendJson(res, 400, { error: `enabled inválido: ${JSON.stringify(v)}. Usa true|false|1|0.` });
+            return;
+          }
+          await memStore.setChatEnabled(jid, jid, okBool);
+        }
+        if (body.ttl_days !== undefined) {
+          const memKey = memMod.memoryKeyFor(jid, jid);
+          try {
+            await memStore.setTtl(memKey || jid, jid, body.ttl_days);
+          } catch (e) {
+            sendJson(res, 400, { error: e.message });
+            return;
+          }
+        }
+        sendJson(res, 200, { jid, enabled: memStore.isEnabledFor(jid, jid) });
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && sub === '/bootstrap') {
+      try {
+        const body = await readBody(req);
+        const lim = Math.min(Math.max(parseInt(body.limit || 50, 10) || 50, 1), 50);
+        const result = await runMemoryBootstrap(jid, lim);
+        sendJson(res, 200, { jid, ...result });
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+      return;
+    }
+
+    if (req.method === 'PUT' && sub === '/facts') {
+      try {
+        const id = parseInt(url.searchParams.get('id') || '', 10);
+        if (!Number.isFinite(id)) {
+          sendJson(res, 400, { error: 'Pasa ?id=<num>.' });
+          return;
+        }
+        const body = await readBody(req);
+        const updated = await memStore.updateFact(id, {
+          key: body.key, value: body.value, category: body.category
+        });
+        if (!updated) {
+          sendJson(res, 404, { error: `Hecho ${id} no encontrado.` });
+          return;
+        }
+        sendJson(res, 200, { jid, fact: updated });
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+      return;
+    }
+
+    if (req.method === 'DELETE' && sub === '/facts') {
+      try {
+        if (url.searchParams.get('all') === '1') {
+          const n = await memStore.clearChatFacts(jid);
+          sendJson(res, 200, { jid, deleted: n });
+          return;
+        }
+        const id = parseInt(url.searchParams.get('id') || '', 10);
+        if (!Number.isFinite(id)) {
+          sendJson(res, 400, { error: 'Pasa ?id=<num> o ?all=1.' });
+          return;
+        }
+        const row = await memStore.deleteFact(id);
+        if (!row) {
+          sendJson(res, 404, { error: `Hecho ${id} no encontrado.` });
+          return;
+        }
+        sendJson(res, 200, { jid, deleted: 1, id });
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+      return;
+    }
   }
 
   // PUT /api/chats/:jid  |  POST /api/chats/:jid/reset
@@ -462,6 +706,8 @@ module.exports = {
   startDashboardServer,
   buildStatus,
   handler,
+  runMemoryBootstrap,
+  mergeMemoryIntoChats,
   DEFAULT_PORT,
   _resetForTests
 };

@@ -1,7 +1,7 @@
 const path = require('path');
 const { exec } = require('child_process');
 const { DatabaseSync } = require('node:sqlite');
-const { sendMessage, sendReply, sendFile, sendTyping } = require('./mcp-client.js');
+const { sendMessage, sendReplyOrFallback, sendReaction, sendFile, sendTyping } = require('./mcp-client.js');
 const { sendMorningBriefing } = require('./daily-briefing.js');
 const sessionManager = require('./session-manager.js');
 const reminderScheduler = require('./reminder-scheduler.js');
@@ -20,6 +20,7 @@ const { isMarketplaceChat } = require('./config/marketplace-filter.js');
 const { MessagePipeline } = require('./pipeline/message-pipeline.js');
 const createAntiEchoMiddleware = require('./pipeline/middlewares/anti-echo.middleware.js');
 const createChatPermissionsMiddleware = require('./pipeline/middlewares/chat-permissions.middleware.js');
+const createChatMemoryMiddleware = require('./pipeline/middlewares/chat-memory.middleware.js');
 const createMediaExtractorMiddleware = require('./pipeline/middlewares/media-extractor.middleware.js');
 const createChatSearchMiddleware = require('./pipeline/middlewares/chat-search.middleware.js');
 const createGatekeeperMiddleware = require('./pipeline/middlewares/gatekeeper.middleware.js');
@@ -296,6 +297,13 @@ async function processAiTurn(chatJid, lastMsg, combinedText, senderName, isGroup
 
   try {
     let contextHistory = '';
+    // Memoria por chat: contexto durable de esta persona antes del historial verbatim.
+    // latest user message > session facts > global defaults (fail-open).
+    try {
+      const memStore = require('./pipeline/memory-store.js').getMemoryStore();
+      const memBlock = memStore.getTurnContextFor(chatJid, lastMsg.sender, combinedText);
+      if (memBlock) contextHistory += `${memBlock}\n`;
+    } catch {}
     try {
       const recentRows = db.prepare(
         "SELECT sender, content, is_from_me FROM messages WHERE chat_jid = ? AND rowid < ? AND content IS NOT NULL AND trim(content) != '' ORDER BY rowid DESC LIMIT 8"
@@ -396,6 +404,7 @@ async function classifyMessage(text) {
 const messagePipeline = new MessagePipeline()
   .use(createAntiEchoMiddleware(antiEcho, botSentTexts))
   .use(createChatPermissionsMiddleware({ antiEcho }))
+  .use(createChatMemoryMiddleware({ antiEcho }))
   .use(createMediaExtractorMiddleware(chatQueue))
   .use(createChatSearchMiddleware(antiEcho))
   .use(createMacControlMiddleware(antiEcho))
@@ -437,6 +446,14 @@ function initWatcher() {
     startDashboardServer({ port: parseInt(process.env.DASHBOARD_PORT || '8767', 10) || 8767 });
   } catch (err) {
     console.error('🎛️ [DASHBOARD] No se pudo iniciar el panel (el watcher sigue corriendo):', err.message);
+  }
+
+  // Migración de memoria por chat (tablas IF NOT EXISTS, fail-open)
+  try {
+    require('./pipeline/memory-store.js').getMemoryStore();
+    console.log('🧠 [CHAT-MEMORY] Tablas de memoria listas.');
+  } catch (err) {
+    console.error('🧠 [CHAT-MEMORY] Migración omitida (fail-open):', err.message);
   }
 
   setInterval(async () => {
