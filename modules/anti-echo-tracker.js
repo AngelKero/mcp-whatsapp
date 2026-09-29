@@ -15,7 +15,8 @@ const DB_PATH = path.join(__dirname, '..', 'store', 'anti-echo.db');
 class AntiEchoTracker {
   constructor(ttlMs = 15 * 60 * 1000) {
     this.ttlMs = ttlMs;
-    this.sentIdsTtlMs = 24 * 60 * 60 * 1000; // 24 horas para IDs de mensajes salientes
+    this.sentIdsTtlMs = 7 * 24 * 60 * 60 * 1000; // 7 días en caliente; lo viejo va por fallback a messages.db
+    this.historyDb = null; // handle read-only perezoso a messages.db (fallback wake)
     this.memoryFallback = new Map();
     this.sentIdsCache = new Set();
     this.db = null;
@@ -130,6 +131,40 @@ class AntiEchoTracker {
     }
   }
 
+  /**
+   * Handle read-only perezoso al historial propio. Se abre al primer fallback
+   * miss y se reutiliza; si no abre, devuelve null (fail-open).
+   */
+  getHistoryDb() {
+    if (this.historyDb !== null) return this.historyDb;
+    try {
+      let p = process.env.MESSAGES_DB_PATH || null;
+      if (!p) {
+        try {
+          // eslint-disable-next-line global-require
+          p = require('../config/env.js').DB_PATHS.MESSAGES;
+        } catch {
+          p = path.join(__dirname, '..', 'store', 'messages.db');
+        }
+      }
+      this.historyDb = new DatabaseSync(p, { readOnly: true });
+    } catch {
+      this.historyDb = false;
+    }
+    return this.historyDb || null;
+  }
+
+  /** Solo tests: redirige el historial a una BD temporal. */
+  _setHistoryDbPathForTests(p) {
+    try { if (this.historyDb) this.historyDb.close(); } catch {}
+    this.historyDb = null;
+    if (p) {
+      process.env.MESSAGES_DB_PATH = p;
+    } else {
+      delete process.env.MESSAGES_DB_PATH;
+    }
+  }
+
   hasSentId(id) {
     if (!id) return false;
     const cleanId = String(id).trim();
@@ -150,6 +185,18 @@ class AntiEchoTracker {
         console.error('[ANTI ECHO] Error verificando sent_messages en DB:', e.message);
       }
     }
+
+    // Fallback en frío (spec quote-wake-retention): el ID pudo purgarse de
+    // sent_messages; el historial propio no se purga. Sin warming de caché.
+    try {
+      const hdb = this.getHistoryDb();
+      if (hdb) {
+        const hit = hdb.prepare(
+          'SELECT 1 FROM messages WHERE id = ? AND is_from_me = 1 LIMIT 1'
+        ).get(cleanId);
+        if (hit) return true;
+      }
+    } catch {}
 
     return false;
   }
