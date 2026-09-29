@@ -17,7 +17,7 @@ node_modules/
 __pycache__/
 *.pyc
 systemone-env/
-# Empty IDE scaffold dirs (not part of agent config; keep only .agents .claude .opencode .github)
+# Empty IDE scaffold dirs (not part of agent config; keep only .agents .claude .opencode .github .gemini)
 .amazonq/
 .augment/
 .bob/
@@ -26,6 +26,7 @@ systemone-env/
 .codeartsdoer/
 .codeassistant/
 .codebuddy/
+.codex/
 .commandcode/
 .continue/
 .cospec/
