@@ -20,6 +20,18 @@ func resultJSON(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
+// ToolErrorWithFix builds an error CallToolResult with structured diagnostic
+// feedback including the underlying error, the failed constraint, and an actionable suggested fix.
+func ToolErrorWithFix(err error, failedConstraint string, suggestedFix string) *mcp.CallToolResult {
+	msg := fmt.Sprintf("Error: %v\nConstraint failed: %s\nSuggested fix: %s", err, failedConstraint, suggestedFix)
+	return &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{
+			mcp.NewTextContent(msg),
+		},
+	}
+}
+
 // inlineMediaMaxBytes is the size cap for embedding decrypted media bytes
 // directly in a download_media tool result. Anything larger stays reachable
 // through the returned Path but is not embedded so we don't blow up the

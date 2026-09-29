@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS messages (
     file_enc_sha256 BLOB,
     file_length INTEGER,
     poll_options_json TEXT,
+    quoted_message_id TEXT,
+    quoted_participant TEXT,
     PRIMARY KEY (id, chat_jid),
     FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );

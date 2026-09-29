@@ -1,8 +1,10 @@
 package mcp
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -236,5 +238,83 @@ func TestDownloadMediaResult_OversizedNotInlined(t *testing.T) {
 	}
 	if len(res.Content) != 1 {
 		t.Fatalf("expected 1 content block for oversized file, got %d", len(res.Content))
+	}
+}
+
+func TestToolErrorWithFix(t *testing.T) {
+	err := fmt.Errorf("field is invalid")
+	constraint := "field must be a positive integer"
+	fix := "pass count=10"
+
+	res := ToolErrorWithFix(err, constraint, fix)
+	if res == nil {
+		t.Fatal("expected non-nil CallToolResult")
+	}
+	if !res.IsError {
+		t.Error("expected IsError to be true")
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("expected non-empty content in result")
+	}
+
+	txt, ok := res.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", res.Content[0])
+	}
+
+	if !strings.Contains(txt.Text, "Error: field is invalid") {
+		t.Errorf("expected error message in text, got: %s", txt.Text)
+	}
+	if !strings.Contains(txt.Text, "Constraint failed: field must be a positive integer") {
+		t.Errorf("expected constraint in text, got: %s", txt.Text)
+	}
+	if !strings.Contains(txt.Text, "Suggested fix: pass count=10") {
+		t.Errorf("expected suggested fix in text, got: %s", txt.Text)
+	}
+}
+
+func TestSendMessage_ArgValidation(t *testing.T) {
+	s := NewServer(nil, nil)
+	tool, ok := s.MCP().ListTools()["send_message"]
+	if !ok || tool == nil || tool.Handler == nil {
+		t.Fatal("send_message tool not registered")
+	}
+
+	cases := []struct {
+		name         string
+		args         map[string]any
+		wantInErrMsg string
+	}{
+		{
+			name:         "empty recipient",
+			args:         map[string]any{"recipient": "", "message": "hello"},
+			wantInErrMsg: "recipient must be a valid phone number",
+		},
+		{
+			name:         "empty message body",
+			args:         map[string]any{"recipient": "5213312345678", "message": ""},
+			wantInErrMsg: "message body must be a non-empty string",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := mcp.CallToolRequest{}
+			req.Params.Arguments = tc.args
+			res, err := tool.Handler(context.Background(), req)
+			if err != nil {
+				t.Fatalf("handler returned error: %v", err)
+			}
+			if !res.IsError {
+				t.Fatalf("args %v: want rejected (IsError: true), got %+v", tc.args, res)
+			}
+			txt, ok := res.Content[0].(mcp.TextContent)
+			if !ok {
+				t.Fatalf("content[0] is not TextContent: %T", res.Content[0])
+			}
+			if !strings.Contains(txt.Text, tc.wantInErrMsg) {
+				t.Errorf("expected %q in error output, got %q", tc.wantInErrMsg, txt.Text)
+			}
+		})
 	}
 }

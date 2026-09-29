@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-cover lint vet fmt clean login serve bridge smoke e2e upgrade-check
+.PHONY: build test test-all test-race test-cover lint vet fmt clean login serve bridge smoke e2e upgrade-check graph-update
 
 # fmt uses process substitution; force bash so `make lint` works under a POSIX /bin/sh
 SHELL := /bin/bash
@@ -11,10 +11,18 @@ LDFLAGS := -X main.Version=$(VERSION)
 
 build:
 	mkdir -p bin
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/whatsapp-mcp
+	$(GO) build -tags "sqlite_fts5" -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/whatsapp-mcp
 
 test:
 	$(GO) test $(PKGS)
+
+test-all:
+	npm run test:scenarios
+	$(GO) test -tags "sqlite_fts5" $(PKGS)
+
+graph-update:
+	@which graphify >/dev/null 2>&1 && graphify update . || echo "graphify CLI not in PATH, skipping graph update"
+
 
 test-race:
 	$(GO) test -race $(PKGS)

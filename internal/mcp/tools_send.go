@@ -18,6 +18,7 @@ import (
 func (s *Server) registerSendTools() {
 	s.registerSendMessage()
 	s.registerSendFile()
+	s.registerSendSticker()
 	s.registerSendAudioMessage()
 	s.registerSendReaction()
 	s.registerSendReply()
@@ -45,7 +46,18 @@ func (s *Server) registerSendMessage() {
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, req mcp.CallToolRequest, a sendMessageArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" {
-			return mcp.NewToolResultError("recipient must be provided"), nil
+			return ToolErrorWithFix(
+				fmt.Errorf("recipient is empty"),
+				"recipient must be a valid phone number or WhatsApp JID",
+				"supply recipient as international digits (e.g. '5213312345678') or JID ('<phone>@s.whatsapp.net' or '<group>@g.us')",
+			), nil
+		}
+		if a.Message == "" {
+			return ToolErrorWithFix(
+				fmt.Errorf("message is empty"),
+				"message body must be a non-empty string",
+				"supply message body text, e.g. message='Hola'",
+			), nil
 		}
 		ctx = withRateLimitOverride(ctx, req)
 		r := s.client.Send(ctx, a.Recipient, a.Message)
@@ -79,11 +91,19 @@ func (s *Server) registerSendFile() {
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, req mcp.CallToolRequest, a sendFileArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" || a.MediaPath == "" {
-			return mcp.NewToolResultError("recipient and media_path are required"), nil
+			return ToolErrorWithFix(
+				fmt.Errorf("missing required parameters"),
+				"both recipient and media_path must be non-empty",
+				"provide recipient (e.g. '5213312345678@s.whatsapp.net') and absolute media_path under uploads directory",
+			), nil
 		}
 		safePath, err := s.client.ValidateMediaPath(a.MediaPath)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return ToolErrorWithFix(
+				err,
+				"media_path must be an absolute path within WHATSAPP_MCP_MEDIA_ROOT",
+				"place file inside the uploads directory and pass its absolute path",
+			), nil
 		}
 		ctx = withRateLimitOverride(ctx, req)
 		r := s.client.SendMediaWithOptions(ctx, client.SendMediaOptions{
@@ -120,18 +140,30 @@ func (s *Server) registerSendAudioMessage() {
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, req mcp.CallToolRequest, a sendAudioArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" || a.MediaPath == "" {
-			return mcp.NewToolResultError("recipient and media_path are required"), nil
+			return ToolErrorWithFix(
+				fmt.Errorf("missing required parameters"),
+				"both recipient and media_path must be non-empty",
+				"provide recipient (e.g. '5213312345678@s.whatsapp.net') and absolute media_path to audio file",
+			), nil
 		}
 		ctx = withRateLimitOverride(ctx, req)
 		safePath, err := s.client.ValidateMediaPath(a.MediaPath)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return ToolErrorWithFix(
+				err,
+				"media_path must be an absolute path within WHATSAPP_MCP_MEDIA_ROOT",
+				"place file inside the uploads directory and pass its absolute path",
+			), nil
 		}
 		path := safePath
 		if !strings.HasSuffix(strings.ToLower(path), ".ogg") {
 			converted, err := media.ConvertToOpusOgg(ctx, path)
 			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("audio conversion failed: %v (install ffmpeg, or call send_file for raw audio)", err)), nil
+				return ToolErrorWithFix(
+					fmt.Errorf("audio conversion failed: %w", err),
+					"audio file must be transcodable via ffmpeg to opus/ogg",
+					"ensure ffmpeg is installed on PATH or call send_file for raw audio attachments",
+				), nil
 			}
 			defer os.Remove(converted)
 			path = converted
@@ -232,5 +264,47 @@ func (s *Server) registerSendTyping() {
 			state = "active"
 		}
 		return mcp.NewToolResultText(fmt.Sprintf("Presence %s for %s", state, a.ChatJID)), nil
+	}))
+}
+
+// -- send_sticker -----------------------------------------------------------
+
+type sendStickerArgs struct {
+	Recipient    string `json:"recipient"`
+	MediaPath    string `json:"media_path"`
+	MarkChatRead bool   `json:"mark_chat_read,omitempty"`
+}
+
+func (s *Server) registerSendSticker() {
+	tool := mcp.NewTool("send_sticker",
+		mcp.WithDescription("Send a WebP sticker natively to a person or group; recipients see it as a native floating sticker without borders. media_path must point to a .webp file under the configured media root. Returns a JSON object `{Success, Message, ID}` where `ID` is the WhatsApp message ID on success."),
+		mcp.WithString("recipient", mcp.Required(), mcp.Description(recipientDesc)),
+		mcp.WithString("media_path", mcp.Required(), mcp.Description("absolute path to the .webp sticker file; must sit under the configured media root (`WHATSAPP_MCP_MEDIA_ROOT`)")),
+		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("if true, also ack recent incoming messages in the chat to clear the unread badge (defaults to false)")),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(true),
+	)
+	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, req mcp.CallToolRequest, a sendStickerArgs) (*mcp.CallToolResult, error) {
+		if a.Recipient == "" || a.MediaPath == "" {
+			return ToolErrorWithFix(
+				fmt.Errorf("missing required parameters"),
+				"both recipient and media_path must be non-empty",
+				"provide recipient (e.g. '5213312345678@s.whatsapp.net') and absolute media_path to .webp file",
+			), nil
+		}
+		safePath, err := s.client.ValidateMediaPath(a.MediaPath)
+		if err != nil {
+			return ToolErrorWithFix(
+				err,
+				"media_path must be an absolute path within WHATSAPP_MCP_MEDIA_ROOT",
+				"place .webp sticker inside the uploads directory and pass its absolute path",
+			), nil
+		}
+		ctx = withRateLimitOverride(ctx, req)
+		r := s.client.SendSticker(ctx, a.Recipient, safePath)
+		s.maybeMarkChatRead(ctx, r, a.Recipient, a.MarkChatRead)
+		return resultJSON(r)
 	}))
 }

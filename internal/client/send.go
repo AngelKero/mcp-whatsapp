@@ -27,26 +27,33 @@ type SendResult struct {
 }
 
 // SendMediaOptions bundles the inputs to SendMediaWithOptions so callers can
+// SendMediaOptions bundles the inputs to SendMediaWithOptions so callers can
 // add per-message flags (view_once, etc.) without growing the argument list.
 type SendMediaOptions struct {
 	Recipient string
 	Caption   string
 	MediaPath string
 	ViewOnce  bool
+	AsSticker bool
 }
 
 // Send sends a text message.
 func (c *Client) Send(ctx context.Context, recipient, message string) SendResult {
-	return c.send(ctx, recipient, message, "", false)
+	return c.send(ctx, recipient, message, "", false, false)
+}
+
+// SendSticker sends a WebP file as a native floating sticker.
+func (c *Client) SendSticker(ctx context.Context, recipient, mediaPath string) SendResult {
+	return c.send(ctx, recipient, "", mediaPath, false, true)
 }
 
 // SendMediaWithOptions is the extensible entry point for media sends.
 func (c *Client) SendMediaWithOptions(ctx context.Context, opts SendMediaOptions) SendResult {
-	return c.send(ctx, opts.Recipient, opts.Caption, opts.MediaPath, opts.ViewOnce)
+	return c.send(ctx, opts.Recipient, opts.Caption, opts.MediaPath, opts.ViewOnce, opts.AsSticker)
 }
 
 // send is the unified implementation shared by Send and SendMediaWithOptions.
-func (c *Client) send(ctx context.Context, recipient, message, mediaPath string, viewOnce bool) SendResult {
+func (c *Client) send(ctx context.Context, recipient, message, mediaPath string, viewOnce, asSticker bool) SendResult {
 	if !c.wa.IsConnected() {
 		return SendResult{Success: false, Message: "Not connected to WhatsApp"}
 	}
@@ -81,7 +88,7 @@ func (c *Client) send(ctx context.Context, recipient, message, mediaPath string,
 	}
 
 	if mediaPath != "" {
-		if err := c.attachMedia(ctx, msg, mediaPath, message, viewOnce); err != nil {
+		if err := c.attachMedia(ctx, msg, mediaPath, message, viewOnce, asSticker); err != nil {
 			return SendResult{Success: false, Message: err.Error()}
 		}
 	} else {
@@ -157,7 +164,7 @@ func parseRecipient(recipient string) (types.JID, error) {
 // When viewOnce is true, the resulting Image/Video/Audio submessage is flagged
 // as view-once. DocumentMessage has no view-once support in WhatsApp clients,
 // so the flag is silently ignored for documents.
-func (c *Client) attachMedia(ctx context.Context, msg *waProto.Message, mediaPath, caption string, viewOnce bool) error {
+func (c *Client) attachMedia(ctx context.Context, msg *waProto.Message, mediaPath, caption string, viewOnce, asSticker bool) error {
 	safePath, err := c.ValidateMediaPath(mediaPath)
 	if err != nil {
 		return fmt.Errorf("media_path rejected: %w", err)
@@ -174,6 +181,19 @@ func (c *Client) attachMedia(ctx context.Context, msg *waProto.Message, mediaPat
 		return fmt.Errorf("Error uploading media: %v", err)
 	}
 	c.log.Infof("Media uploaded: url=%s bytes=%d", c.redactor.URL(resp.URL), resp.FileLength)
+
+	if asSticker || strings.HasSuffix(strings.ToLower(safePath), ".webp") {
+		msg.StickerMessage = &waProto.StickerMessage{
+			URL:           &resp.URL,
+			DirectPath:    &resp.DirectPath,
+			MediaKey:      resp.MediaKey,
+			Mimetype:      proto.String("image/webp"),
+			FileEncSHA256: resp.FileEncSHA256,
+			FileSHA256:    resp.FileSHA256,
+			FileLength:    &resp.FileLength,
+		}
+		return nil
+	}
 
 	switch mediaType {
 	case whatsmeow.MediaImage:

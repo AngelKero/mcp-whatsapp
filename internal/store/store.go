@@ -52,9 +52,11 @@ type Message struct {
 	// WhatsApp media protobuf at receive/send time. When present, the
 	// download path uses it directly; when absent (legacy row written by
 	// an older daemon build), Download falls back to parsing URL.
-	DirectPath  string `json:"direct_path,omitempty"`
-	ChatName    string `json:"chat_name,omitempty"`
-	PhoneNumber string `json:"phone_number,omitempty"`
+	DirectPath        string `json:"direct_path,omitempty"`
+	ChatName          string `json:"chat_name,omitempty"`
+	PhoneNumber       string `json:"phone_number,omitempty"`
+	QuotedMessageID   string `json:"quoted_message_id,omitempty"`
+	QuotedParticipant string `json:"quoted_participant,omitempty"`
 }
 
 // Chat is a cached WhatsApp chat.
@@ -174,10 +176,11 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO messages
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length, quoted_message_id, quoted_participant)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ChatJID, m.Sender, m.Content, m.Timestamp, m.IsFromMe,
 		m.MediaType, m.Filename, m.URL, m.DirectPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		m.QuotedMessageID, m.QuotedParticipant,
 	)
 	return err
 }
@@ -324,6 +327,8 @@ CREATE TABLE IF NOT EXISTS messages (
 	file_enc_sha256 BLOB,
 	file_length INTEGER,
 	poll_options_json TEXT,
+	quoted_message_id TEXT,
+	quoted_participant TEXT,
 	PRIMARY KEY (id, chat_jid),
 	FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );
@@ -350,6 +355,8 @@ func migrateSchema(db *sql.DB) error {
 	defer rows.Close()
 	hasPollOptions := false
 	hasDirectPath := false
+	hasQuotedMessageID := false
+	hasQuotedParticipant := false
 	for rows.Next() {
 		var (
 			cid        int
@@ -368,6 +375,12 @@ func migrateSchema(db *sql.DB) error {
 		if name == "direct_path" {
 			hasDirectPath = true
 		}
+		if name == "quoted_message_id" {
+			hasQuotedMessageID = true
+		}
+		if name == "quoted_participant" {
+			hasQuotedParticipant = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate table_info(messages): %w", err)
@@ -380,6 +393,16 @@ func migrateSchema(db *sql.DB) error {
 	if !hasDirectPath {
 		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN direct_path TEXT"); err != nil {
 			return fmt.Errorf("add column direct_path: %w", err)
+		}
+	}
+	if !hasQuotedMessageID {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN quoted_message_id TEXT"); err != nil {
+			return fmt.Errorf("add column quoted_message_id: %w", err)
+		}
+	}
+	if !hasQuotedParticipant {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN quoted_participant TEXT"); err != nil {
+			return fmt.Errorf("add column quoted_participant: %w", err)
 		}
 	}
 	return nil

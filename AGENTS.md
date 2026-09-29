@@ -1,38 +1,47 @@
 # AGENTS.md — mcp-whatsapp
 
-Single Go binary MCP daemon wrapping `go.mau.fi/whatsmeow` to expose a personal WhatsApp account. `whatsapp-mcp serve` on `127.0.0.1:8765` serves MCP at `/mcp`, pairing UI at `/pair`.
+Ecosistema integral de automatización, asistencia personal y control remoto para WhatsApp en macOS Apple Silicon. Opera en dos capas desacopladas:
+1. **Capa Daemon Go (`whatsapp-mcp`)**: binario único en Go que envuelve `go.mau.fi/whatsmeow`, exponiendo 42 herramientas MCP en `127.0.0.1:8765/mcp` y UI de vinculación QR en `/pair`.
+2. **Capa Observador & Pipeline Node.js (`whatsapp-watcher.js`, `pipeline/`)**: orquestador de eventos multimodales en Node.js 24, clasificación local ultra-rápida con Laya-MLX en GPU Metal (`localhost:8766`), búsqueda RAG SQLite FTS5 (`!buscar`), control de macOS (`!mac`), síntesis de voz nativa (Paulina TTS), y Second Brain en Notion vía Token Bucket Queue (~2.85 req/s).
 
 ## Build / test / run (copy-paste)
 
 ```bash
-make build      # ./bin/whatsapp-mcp (tags sqlite_fts5, VERSION via git describe)
-make test       # go test ./...
-make test-race  # go test -race ./...
-make vet        # go vet ./...
-make e2e        # build + JSON-RPC smoke (-tags=e2e)
-make smoke      # boot-test without WhatsApp connection
-./bin/whatsapp-mcp login   # QR in terminal, writes store/whatsapp.db
-./bin/whatsapp-mcp serve   # daemon, holds store/.lock (single instance)
+make build       # ./bin/whatsapp-mcp (tags sqlite_fts5, VERSION via git describe)
+make test        # go test ./...
+make test-all    # npm run test:scenarios + go test -tags sqlite_fts5 (full matrix)
+make lint        # go vet + gofmt check
+npm run test:scenarios # 22 escenarios normativos OpenSpec en Node.js
+make graph-update # sincroniza grafo de conocimiento local con Graphify
+./bin/whatsapp-mcp login   # QR en terminal, escribe store/whatsapp.db
+./bin/whatsapp-mcp serve   # daemon Go, mantiene store/.lock (instancia única)
+node whatsapp-watcher.js   # pipeline reactivo Node.js en tiempo real
 ```
 
-Go 1.26+. Env: `WHATSAPP_MCP_ADDR`, `WHATSAPP_MCP_TOKEN` (required with `-allow-remote`), `WHATSAPP_MCP_MEDIA_ROOT` (default `./store/uploads/`), `WHATSAPP_MCP_DEBUG=1`.
+Go 1.26+ y Node.js 24+. Env: `WHATSAPP_MCP_ADDR`, `WHATSAPP_MCP_TOKEN`, `WHATSAPP_MCP_MEDIA_ROOT` (default `./store/uploads/`), `NOTION_API_KEY`.
 
 ## Repo map
 
 ```
-cmd/whatsapp-mcp/       login | serve | smoke
+cmd/whatsapp-mcp/       login | serve | smoke (Go daemon)
 internal/client/        whatsmeow wrapper: send.go, events.go, history.go, features*.go, vcard.go
 internal/daemon/        HTTP server, pairing state machine, /pair
-internal/mcp/           mark3labs/mcp-go server, tools.go + tools_groups.go + tools_media.go + tools_privacy.go (42 tools)
-internal/media/         ogg analysis + ffmpeg shell-out
-internal/security/      path allowlist, filename sanitisation, log redaction
-internal/store/         SQLite cache + LID resolution (lid.go) + poll.go; seed: internal/store/testdata/seed.sql
-scripts/mdtest-parity.sh  whatsmeow API drift canary
-openspec/               specs/ = truth, changes/ = proposals (OpenSpec spec-driven)
-graphify-out/           graph.html + GRAPH_REPORT.md + graph.json (query-first, don't grep raw)
+internal/mcp/           mark3labs/mcp-go server, 42 tools (send, query, media, groups, privacy)
+internal/store/         SQLite cache (messages.db) + LID resolution + poll.go
+whatsapp-watcher.js     Orquestador reactivo de eventos WhatsApp en Node.js
+pipeline/               Middlewares: mac-control, chat-search, school-notices, turn-taking, etc.
+system_one_server.py    Servidor Laya-MLX en Metal GPU (puerto 8766, Sistema 1 <30ms)
+system-one-client.js    Cliente HTTP hacia Laya-MLX para clasificación instantánea
+notion-actions.js       Integración con base de datos de Notion (Tareas, Gastos, Materias)
+notion-queue.js         Token Bucket Rate Limiter para Notion (2.85 req/s)
+docs/adr/               Architecture Decision Records (ADR-001 a ADR-004)
+openspec/               specs/ = verdad viva (17 specs), changes/ = propuestas
+graphify-out/           graph.html + GRAPH_REPORT.md + graph.json (5,900+ nodos)
+.opencode/agents/       Perfiles especializados: architect, implementer, qa-reviewer
 ```
 
 Data: `store/messages.db`, `store/whatsapp.db`, `store/.lock`. Never commit `*.db`, `.env`, media.
+
 
 ## Spec-driven workflow (OpenSpec)
 

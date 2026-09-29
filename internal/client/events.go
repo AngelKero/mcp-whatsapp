@@ -109,19 +109,22 @@ func (c *Client) normalizeIncomingMessage(
 
 	content := extractTextContent(raw)
 	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(raw)
+	quotedID, quotedParticipant := extractQuotedInfo(raw)
 
 	return normalizedMessage{
 		msg: store.Message{
-			ID:         msgID,
-			ChatJID:    chatJID,
-			Sender:     sender,
-			Content:    content,
-			Timestamp:  timestamp,
-			IsFromMe:   isFromMe,
-			MediaType:  mediaType,
-			Filename:   filename,
-			URL:        url,
-			DirectPath: directPath,
+			ID:                msgID,
+			ChatJID:           chatJID,
+			Sender:            sender,
+			Content:           content,
+			Timestamp:         timestamp,
+			IsFromMe:          isFromMe,
+			MediaType:         mediaType,
+			Filename:          filename,
+			URL:               url,
+			DirectPath:        directPath,
+			QuotedMessageID:   quotedID,
+			QuotedParticipant: quotedParticipant,
 		},
 		mediaKey:      mediaKey,
 		fileSHA256:    fileSHA256,
@@ -410,6 +413,30 @@ func extractTextContent(msg *waProto.Message) string {
 	return ""
 }
 
+// extractQuotedInfo returns the stanza ID and participant of the quoted message, if any.
+func extractQuotedInfo(msg *waProto.Message) (quotedID, quotedParticipant string) {
+	if msg == nil {
+		return "", ""
+	}
+	var ci *waProto.ContextInfo
+	if ext := msg.GetExtendedTextMessage(); ext != nil {
+		ci = ext.GetContextInfo()
+	} else if img := msg.GetImageMessage(); img != nil {
+		ci = img.GetContextInfo()
+	} else if vid := msg.GetVideoMessage(); vid != nil {
+		ci = vid.GetContextInfo()
+	} else if doc := msg.GetDocumentMessage(); doc != nil {
+		ci = doc.GetContextInfo()
+	} else if aud := msg.GetAudioMessage(); aud != nil {
+		ci = aud.GetContextInfo()
+	}
+	if ci != nil {
+		quotedID = ci.GetStanzaID()
+		quotedParticipant = ci.GetParticipant()
+	}
+	return
+}
+
 // extractMediaInfo pulls out the storable media fields from a Message.
 // directPath is captured verbatim from the media protobuf and includes the
 // signed `?ccb=&oh=&oe=&_nc_sid=` CDN auth query, so the download path can
@@ -439,6 +466,11 @@ func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url, directPat
 		return "document", fname,
 			doc.GetURL(), doc.GetDirectPath(),
 			doc.GetMediaKey(), doc.GetFileSHA256(), doc.GetFileEncSHA256(), doc.GetFileLength()
+	}
+	if stk := msg.GetStickerMessage(); stk != nil {
+		return "sticker", generatedMediaFilename("sticker", stk.GetFileSHA256(), ".webp"),
+			stk.GetURL(), stk.GetDirectPath(),
+			stk.GetMediaKey(), stk.GetFileSHA256(), stk.GetFileEncSHA256(), stk.GetFileLength()
 	}
 
 	return "", "", "", "", nil, nil, nil, 0

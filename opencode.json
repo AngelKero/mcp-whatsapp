@@ -1,9 +1,15 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    ".opencode/plugins/graphify.js"
+    ".opencode/plugins/graphify.js",
+    ".opencode/plugins/whatsapp-guards.js"
   ],
-  "instructions": ["AGENTS.md", "CONTRIBUTING.md", "openspec/AGENTS.md"],
+  "instructions": [
+    "AGENTS.md",
+    "openspec/project.md",
+    "CONTRIBUTING.md",
+    "openspec/AGENTS.md"
+  ],
   "formatter": true,
   "lsp": {
     "gopls": {
@@ -20,13 +26,18 @@
       "make test*": "allow",
       "make vet": "allow",
       "make smoke": "allow",
-      "openspec list": "allow",
-      "openspec status*": "allow",
-      "openspec show*": "allow",
-      "openspec validate*": "allow",
+      "make graph-update": "allow",
+      "npm test*": "allow",
+      "npm run *": "allow",
+      "node *": "allow",
+      "openspec *": "allow",
       "git status*": "allow",
       "git diff*": "allow",
-      "git log*": "allow"
+      "git log*": "allow",
+      "git add*": "ask",
+      "git commit*": "ask",
+      "git push*": "ask",
+      "gh *": "ask"
     }
   },
   "mcp": {
