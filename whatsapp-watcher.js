@@ -215,8 +215,27 @@ let lastBriefingDate = '';
 let lastFinanceReportDate = '';
 let lastAuditDate = '';
 
+// Acuse visual de turno (spec ack-reactions): 👀 + typing al abrir,
+// limpieza en finally. Fire-and-forget en montaje (cero latencia),
+// best-effort en limpieza; ningún fallo interrumpe el turno.
+const { withAckReaction } = require('./pipeline/ack.js');
+const ackDeps = {
+  sendReactionFn: (...args) => sendReaction(...args),
+  sendTypingFn: (chatJid, active) => sendTyping(chatJid, active),
+  log: (...args) => console.log('[ACK]', ...args)
+};
+
 // Procesador Multi-Turn con Antigravity
 async function processAiTurn(chatJid, lastMsg, combinedText, senderName, isGroup, isFromAngel, isFromErika, isMyOwnChat, contactName) {
+  return withAckReaction(ackDeps, {
+    chatJid,
+    msgId: lastMsg && lastMsg.id,
+    senderJid: isGroup && lastMsg ? lastMsg.sender : '',
+    isGroup: !!isGroup
+  }, () => processAiTurnInner(chatJid, lastMsg, combinedText, senderName, isGroup, isFromAngel, isFromErika, isMyOwnChat, contactName));
+}
+
+async function processAiTurnInner(chatJid, lastMsg, combinedText, senderName, isGroup, isFromAngel, isFromErika, isMyOwnChat, contactName) {
   const cleanQuery = combinedText
     .replace(/[!/]ai\b/gi, '')
     .replace(/[!/]ia\b/gi, '')

@@ -213,17 +213,20 @@ async function sendReply(chatJid, body, targetMessageId, targetSenderJid = '') {
   return parsed;
 }
 
-async function sendReaction(recipient, messageId, emoji) {
+async function sendReaction(recipient, messageId, emoji, senderJid = '') {
   let jid = String(recipient).trim();
   if (!jid.includes('@')) {
     const cleanNumber = jid.replace(/\D/g, '');
     jid = `${cleanNumber}@s.whatsapp.net`;
   }
-  return await callTool('send_reaction', {
-    recipient: jid,
+  const args = {
+    chat_jid: jid,
     message_id: messageId,
     emoji: emoji
-  });
+  };
+  // El daemon exige sender en grupos; en 1:1 se omite (retrocompatible).
+  if (senderJid) args.sender_jid = senderJid;
+  return await callTool('send_reaction', args);
 }
 
 async function sendFile(recipient, mediaPath, caption = '') {
