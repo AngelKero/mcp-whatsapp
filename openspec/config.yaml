@@ -1,0 +1,20 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Go 1.26+, whatsmeow (go.mau.fi/whatsmeow), SQLite (mattn/go-sqlite3, tag sqlite_fts5), mark3labs/mcp-go
+  Binary: ./bin/whatsapp-mcp (VERSION via git describe ldflags). Commands: make build/test/test-race/vet/e2e/smoke
+  Architecture: cmd/whatsapp-mcp (login|serve|smoke) + internal/client (whatsmeow wrapper) + internal/daemon (/mcp,/pair) + internal/mcp (42 tools) + internal/store (SQLite+LID) + internal/media + internal/security
+  Conventions: gofmt clean, thin wrappers over whatsmeow (protocol bugs upstream), @lid via whatsmeow_lid_map, tests via openTestStore+seed.sql
+  Domain: personal WhatsApp MCP daemon on 127.0.0.1:8765, single-instance flock store/.lock
+
+rules:
+  proposal:
+    - Include rollback plan (re-pair via /pair or login, DB restore from store/)
+    - Identify affected MCP tools (of 42) and store schema impact
+  specs:
+    - Use ADDED/MODIFIED/REMOVED with at least one Scenario per requirement
+    - One spec file per capability under specs/<cap>/spec.md
+  design:
+    - Include whatsmeow method names (e.g. BuildPollCreation, GetGroupInfo) for traceability
+  tasks:
+    - Break into - [ ] checkboxes; include test + vet + parity grep where relevant

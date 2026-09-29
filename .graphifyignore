@@ -1,0 +1,37 @@
+# graphify: exclude duplicated OpenSpec artifacts from `openspec init --tools all`.
+# Canonical copies are kept in .agents/, .opencode/ and .claude/.
+.amazonq/
+.augment/
+.bob/
+.cline/
+.clinerules/
+.codeartsdoer/
+.codeassistant/
+.codebuddy/
+.commandcode/
+.continue/
+.cospec/
+.crush/
+.cursor/
+.devin/
+.factory/
+.forge/
+.gemini/
+.github/skills/
+.github/prompts/
+.hermes/
+.iflow/
+.junie/
+.kilocode/
+.kimi-code/
+.kiro/
+.lingma/
+.omp/
+.pi/
+.qoder/
+.qwen/
+.roo/
+.rovodev/
+.trae/
+.vibe/
+.zcode/

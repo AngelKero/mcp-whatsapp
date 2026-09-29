@@ -1,7 +1,53 @@
 *.db
+.env
+.env.*
 claude_desktop_config.json
 whatsapp.log
+*.log
 bin/
 cover.out
+.DS_Store
 # Anchored: only the repo-root session/data dir, NOT internal/store/
 /store/
+# Generated knowledge graph (rebuild via /graphify)
+graphify-out/
+# Node / Python artefacts from personal automation scripts
+node_modules/
+.opencode/node_modules/
+__pycache__/
+*.pyc
+systemone-env/
+# Empty IDE scaffold dirs (not part of agent config; keep only .agents .claude .opencode .github)
+.amazonq/
+.augment/
+.bob/
+.cline/
+.clinerules/
+.codeartsdoer/
+.codeassistant/
+.codebuddy/
+.commandcode/
+.continue/
+.cospec/
+.crush/
+.cursor/
+.devin/
+.factory/
+.forge/
+.gemini/
+.hermes/
+.iflow/
+.junie/
+.kilocode/
+.kimi-code/
+.kiro/
+.lingma/
+.omp/
+.pi/
+.qoder/
+.qwen/
+.roo/
+.rovodev/
+.trae/
+.vibe/
+.zcode/
